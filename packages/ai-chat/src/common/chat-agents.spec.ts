@@ -17,9 +17,11 @@
 import 'reflect-metadata';
 
 import { expect } from 'chai';
-import { LanguageModelMessage, LanguageModelRequirement } from '@theia/ai-core';
-import { AbstractChatAgent, ChatAgentLocation } from './chat-agents';
+import { LanguageModelMessage, LanguageModelRequirement, LanguageModelStreamResponsePart } from '@theia/ai-core';
+import { AbstractChatAgent, AbstractStreamParsingChatAgent, ChatAgentLocation } from './chat-agents';
 import {
+    ChatResponseContent,
+    CompactionChatResponseContent,
     MutableChatModel,
     MutableChatRequestModel,
     ChatModel,
@@ -120,5 +122,29 @@ describe('AbstractChatAgent.getMessages', () => {
             .filter(m => m.actor === 'ai');
         expect(aiTextMessages).to.have.lengthOf(1);
         expect(aiTextMessages[0].text).to.equal('Partial reply before cancel');
+    });
+});
+
+class StreamParsingTestChatAgent extends AbstractStreamParsingChatAgent {
+    readonly id = 'stream-test-agent';
+    readonly name = 'Stream Test Agent';
+    readonly languageModelRequirements: LanguageModelRequirement[] = [];
+    protected readonly defaultLanguageModelPurpose = 'chat';
+
+    exposeParse(token: LanguageModelStreamResponsePart): ChatResponseContent | ChatResponseContent[] {
+        return this.parse(token, undefined as never);
+    }
+}
+
+describe('AbstractChatAgent.parse compaction', () => {
+    it('creates compaction content from a compaction response part', () => {
+        const agent = new StreamParsingTestChatAgent();
+        const content = agent.exposeParse({ compaction: { provider: 'anthropic', data: { b: 1 }, summary: 's' } });
+        expect(ChatResponseContent.is(content)).to.equal(true);
+        expect(CompactionChatResponseContent.is(content)).to.equal(true);
+        const compaction = content as CompactionChatResponseContent;
+        expect(compaction.provider).to.equal('anthropic');
+        expect(compaction.data).to.deep.equal({ b: 1 });
+        expect(compaction.summary).to.equal('s');
     });
 });

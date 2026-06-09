@@ -21,6 +21,8 @@
 
 import {
     AIVariableResolutionRequest,
+    CompactionMessage,
+    CompactionSettings,
     GenericCapabilitySelections,
     LanguageModelMessage,
     ReasoningSettings,
@@ -225,6 +227,8 @@ export interface CommonChatSessionSettings {
     reasoning?: ReasoningSettings;
     /** Per-session tool confirmation timeout in seconds. Overrides the global preference when set. */
     confirmationTimeout?: number;
+    /** Per-session server-side compaction settings; `compaction.enabled`, when set, wins over the per-provider and global settings. */
+    compaction?: CompactionSettings;
 }
 
 export interface ChatSessionSettings {
@@ -468,6 +472,12 @@ export interface TextContentData {
 export interface ThinkingContentData {
     content: string;
     signature: string;
+}
+
+export interface CompactionContentData {
+    provider: string;
+    data: unknown;
+    summary?: string;
 }
 
 export interface MarkdownContentData {
@@ -829,6 +839,18 @@ export namespace ThinkingChatResponseContent {
             'content' in obj &&
             typeof obj.content === 'string'
         );
+    }
+}
+
+export interface CompactionChatResponseContent extends ChatResponseContent {
+    kind: 'compaction';
+    provider: string;
+    data: unknown;
+    summary?: string;
+}
+export namespace CompactionChatResponseContent {
+    export function is(obj: unknown): obj is CompactionChatResponseContent {
+        return ChatResponseContent.is(obj) && obj.kind === 'compaction';
     }
 }
 
@@ -2192,6 +2214,58 @@ export class ThinkingChatResponseContentImpl implements ThinkingChatResponseCont
             data: {
                 content: this._content,
                 signature: this._signature
+            }
+        };
+    }
+}
+
+export class CompactionChatResponseContentImpl implements CompactionChatResponseContent {
+    readonly kind = 'compaction';
+    protected _provider: string;
+    protected _data: unknown;
+    protected _summary?: string;
+
+    constructor(provider: string, data: unknown, summary?: string) {
+        this._provider = provider;
+        this._data = data;
+        this._summary = summary;
+    }
+
+    get provider(): string {
+        return this._provider;
+    }
+    get data(): unknown {
+        return this._data;
+    }
+    get summary(): string | undefined {
+        return this._summary;
+    }
+
+    asString(): string | undefined {
+        return undefined;
+    }
+
+    asDisplayString(): string | undefined {
+        return this._summary;
+    }
+
+    toLanguageModelMessage(): CompactionMessage {
+        return {
+            actor: 'ai',
+            type: 'compaction',
+            provider: this._provider,
+            data: this._data,
+            summary: this._summary
+        };
+    }
+
+    toSerializable(): SerializableChatResponseContentData<CompactionContentData> {
+        return {
+            kind: 'compaction',
+            data: {
+                provider: this._provider,
+                data: this._data,
+                summary: this._summary
             }
         };
     }

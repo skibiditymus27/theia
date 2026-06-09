@@ -23,6 +23,7 @@ export * from './text-part-renderer';
 export * from './toolcall-part-renderer';
 export * from './not-available-toolcall-renderer';
 export * from './thinking-part-renderer';
+export * from './compaction-part-renderer';
 export * from './progress-part-renderer';
 export * from './tool-confirmation';
 export * from './delegation-tool-renderer';

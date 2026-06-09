@@ -42,7 +42,8 @@ export interface ReasoningSupport {
     readonly defaultLevel?: ReasoningLevel;
 }
 
-export type LanguageModelMessage = TextMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ImageMessage;
+export type LanguageModelMessage =
+    TextMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ImageMessage | CompactionMessage;
 export namespace LanguageModelMessage {
 
     export function isTextMessage(obj: LanguageModelMessage): obj is TextMessage {
@@ -59,6 +60,9 @@ export namespace LanguageModelMessage {
     }
     export function isImageMessage(obj: LanguageModelMessage): obj is ImageMessage {
         return obj.type === 'image';
+    }
+    export function isCompactionMessage(obj: LanguageModelMessage): obj is CompactionMessage {
+        return obj.type === 'compaction';
     }
 }
 export interface TextMessage {
@@ -105,6 +109,17 @@ export interface ImageMessage {
     actor: 'ai' | 'user';
     type: 'image';
     image: ImageContent;
+}
+
+export interface CompactionMessage {
+    actor: 'ai';
+    type: 'compaction';
+    /** Originating provider tag; a backend replays the payload only when this matches its own provider. */
+    provider: string;
+    /** Opaque provider payload to replay. */
+    data: unknown;
+    /** Human-readable summary, when the provider exposes one. */
+    summary?: string;
 }
 
 export const isLanguageModelRequestMessage = (obj: unknown): obj is LanguageModelMessage =>
@@ -284,6 +299,50 @@ export namespace ToolRequest {
             (!('required' in obj) || (Array.isArray(obj.required) && obj.required.every(prop => typeof prop === 'string')));
     }
 }
+/**
+ * Per-session/per-request server-side compaction settings, carried verbatim from the chat
+ * session's common settings to the request. Kept as an object so further parameters can be
+ * added later.
+ */
+export interface CompactionSettings {
+    /** Explicit enablement for this session; when set it wins over the model's default. `undefined` means "no explicit choice". */
+    enabled?: boolean;
+}
+
+/** Per-provider override for server-side compaction; combined with the global preference by {@link resolveCompactionDefault}. */
+export type ServerSideCompactionSetting = 'default' | 'enabled' | 'disabled';
+
+/**
+ * Resolves a model's default server-side compaction enablement from the global preference and
+ * the per-provider override. `'enabled'`/`'disabled'` force the result; `'default'` defers to
+ * the global preference. Intended to be called where the preferences are read (the provider's
+ * frontend contribution) and stored on the model.
+ */
+export function resolveCompactionDefault(globalEnabled: boolean, perProviderOverride: ServerSideCompactionSetting): boolean {
+    if (perProviderOverride === 'enabled') {
+        return true;
+    }
+    if (perProviderOverride === 'disabled') {
+        return false;
+    }
+    return globalEnabled;
+}
+
+/**
+ * Resolves whether server-side compaction is effective for a request: the model must support it
+ * (capability), then an explicit per-session setting wins, otherwise the model's resolved default applies.
+ */
+export function resolveServerSideCompaction(
+    capability: boolean | undefined,
+    enabledByDefault: boolean,
+    compaction: CompactionSettings | undefined
+): boolean {
+    if (!capability) {
+        return false;
+    }
+    return compaction?.enabled ?? enabledByDefault;
+}
+
 export interface LanguageModelRequest {
     messages: LanguageModelMessage[],
     tools?: ToolRequest[];
@@ -292,6 +351,8 @@ export interface LanguageModelRequest {
     clientSettings?: { keepToolCalls: boolean; keepThinking: boolean };
     /** Provider-agnostic reasoning configuration; providers translate it to their native API. */
     reasoning?: ReasoningSettings;
+    /** Provider-agnostic server-side compaction settings, copied verbatim from the chat session. Resolved against the model's capability and default in the backend. */
+    compaction?: CompactionSettings;
 }
 export interface ResponseFormatJsonSchema {
     type: 'json_schema';
@@ -347,10 +408,12 @@ export interface LanguageModelTextResponse {
 export const isLanguageModelTextResponse = (obj: unknown): obj is LanguageModelTextResponse =>
     !!(obj && typeof obj === 'object' && 'text' in obj && typeof (obj as { text: unknown }).text === 'string');
 
-export type LanguageModelStreamResponsePart = TextResponsePart | ToolCallResponsePart | ThinkingResponsePart | UsageResponsePart;
+export type LanguageModelStreamResponsePart =
+    TextResponsePart | ToolCallResponsePart | ThinkingResponsePart | UsageResponsePart | CompactionResponsePart;
 
 export const isLanguageModelStreamResponsePart = (part: unknown): part is LanguageModelStreamResponsePart =>
-    isUsageResponsePart(part) || isTextResponsePart(part) || isThinkingResponsePart(part) || isToolCallResponsePart(part);
+    isUsageResponsePart(part) || isTextResponsePart(part) || isThinkingResponsePart(part) ||
+    isToolCallResponsePart(part) || isCompactionResponsePart(part);
 
 export interface UsageResponsePart {
     input_tokens: number;
@@ -380,6 +443,23 @@ export interface ThinkingResponsePart {
 }
 export const isThinkingResponsePart = (part: unknown): part is ThinkingResponsePart =>
     !!(part && typeof part === 'object' && 'thought' in part && typeof part.thought === 'string');
+
+export interface CompactionResponsePart {
+    compaction: {
+        /** Originating provider tag, e.g. 'anthropic' or 'openai-responses'. */
+        provider: string;
+        /** Opaque provider payload (Anthropic compaction block(s) / OpenAI compaction item). Never interpreted outside the originating backend. */
+        data: unknown;
+        /** Human-readable summary, when the provider exposes one. */
+        summary?: string;
+    };
+}
+export const isCompactionResponsePart = (part: unknown): part is CompactionResponsePart =>
+    !!(part && typeof part === 'object' && 'compaction' in part &&
+        typeof (part as CompactionResponsePart).compaction === 'object' &&
+        (part as CompactionResponsePart).compaction &&
+        'provider' in (part as CompactionResponsePart).compaction &&
+        typeof (part as CompactionResponsePart).compaction.provider === 'string');
 
 export interface ToolCallTextResult { type: 'text', text: string; };
 export interface ToolCallImageResult extends Base64ImageContent { type: 'image' };
@@ -461,6 +541,8 @@ export interface LanguageModelMetaData {
     readonly maxOutputTokens?: number;
     readonly status: LanguageModelStatus;
     readonly reasoningSupport?: ReasoningSupport;
+    /** Whether this model supports provider-native server-side compaction (capability, distinct from whether it is activated). */
+    readonly serverSideCompactionSupport?: boolean;
 }
 
 export namespace LanguageModelMetaData {
