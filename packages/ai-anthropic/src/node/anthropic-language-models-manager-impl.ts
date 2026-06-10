@@ -92,7 +92,8 @@ export class AnthropicLanguageModelsManagerImpl implements AnthropicLanguageMode
                 reasoningApi: metadata.reasoningApi,
                 supportsXHighEffort: metadata.supportsXHighEffort,
                 maxInputTokens: metadata.maxInputTokens,
-                useBetaEndpoints: modelDescription.useBetaEndpoints
+                useBetaEndpoints: modelDescription.useBetaEndpoints,
+                memoryToolFolder: modelDescription.memoryToolFolder
             });
         } else {
             this.languageModelRegistry.addLanguageModels([
@@ -112,7 +113,8 @@ export class AnthropicLanguageModelsManagerImpl implements AnthropicLanguageMode
                     metadata.supportsXHighEffort,
                     metadata.maxInputTokens,
                     ANTHROPIC_SERVER_TOOLS,
-                    modelDescription.useBetaEndpoints
+                    modelDescription.useBetaEndpoints,
+                    modelDescription.memoryToolFolder
                 )
             ]);
         }

@@ -5,7 +5,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.0",
     "@theia/ai-core": "1.73.0",
-    "@theia/core": "1.73.0"
+    "@theia/core": "1.73.0",
+    "@theia/workspace": "1.73.0"
   },
   "publishConfig": {
     "access": "public"
