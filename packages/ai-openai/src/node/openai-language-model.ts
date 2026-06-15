@@ -369,10 +369,10 @@ export class OpenAiModelUtils {
         model?: string
     ): ChatCompletionMessageParam[] {
         const processed = this.processSystemMessages(messages, developerMessageSettings);
-        // 'server_tool_use' replay messages can appear when switching providers within a session;
+        // 'server_tool_use' and 'compaction' replay messages can appear when switching providers within a session;
         // OpenAI has no equivalent, so they are dropped (like 'thinking' messages).
         const converted = processed
-            .filter(m => m.type !== 'thinking' && m.type !== 'server_tool_use')
+            .filter(m => m.type !== 'thinking' && m.type !== 'server_tool_use' && m.type !== 'compaction')
             .map(m => this.toOpenAIMessage(m, developerMessageSettings));
         return this.mergeConsecutiveAssistantMessages(converted);
     }

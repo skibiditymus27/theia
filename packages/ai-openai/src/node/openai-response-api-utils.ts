@@ -299,6 +299,8 @@ export class OpenAiResponseApiUtils {
             } else if (LanguageModelMessage.isServerToolUseMessage(message)) {
                 // 'server_tool_use' replay messages can appear when switching providers within a
                 // session; OpenAI has no equivalent, so they are skipped.
+            } else if (LanguageModelMessage.isCompactionMessage(message)) {
+                // Pass: provider-specific compaction summaries are not sent, the full history is still available
             } else {
                 unreachable(message);
             }

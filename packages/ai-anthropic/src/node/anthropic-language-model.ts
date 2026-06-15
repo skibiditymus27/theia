@@ -15,6 +15,7 @@
 // *****************************************************************************
 
 import {
+    AppliedContextEdit,
     createToolCallError,
     ImageContent,
     ImageMimeType,
@@ -62,11 +63,26 @@ interface ToolCallback {
     args: string;
 }
 
+/**
+ * Subset of the per-iteration usage entries (`usage.iterations`) reported by the beta Messages API
+ * when a compaction was triggered. Not yet part of the SDK types.
+ */
+interface UsageIteration {
+    type?: string;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+}
+
 const createMessageContent = (message: LanguageModelMessage): MessageParam['content'] => {
     if (LanguageModelMessage.isTextMessage(message)) {
         return [{ type: 'text', text: message.text }];
     } else if (LanguageModelMessage.isThinkingMessage(message)) {
         return [{ signature: message.signature, thinking: message.thinking, type: 'thinking' }];
+    } else if (LanguageModelMessage.isCompactionMessage(message)) {
+        // compaction blocks are not yet part of the SDK types (beta 'compact-2026-01-12')
+        return [{ type: 'compaction', content: message.summary } as unknown as Anthropic.Messages.ContentBlockParam];
     } else if (LanguageModelMessage.isToolUseMessage(message)) {
         return [{ id: message.id, input: message.input, name: message.name, type: 'tool_use' }];
     } else if (LanguageModelMessage.isToolResultMessage(message)) {
@@ -353,7 +369,7 @@ export class AnthropicModel implements LanguageModel {
         toolMessages?: readonly Anthropic.Messages.MessageParam[]
     ): Promise<LanguageModelStreamResponse> {
         const settings = this.getSettings(request);
-        const { messages, systemMessage } = transformToAnthropicParams(request.messages, this.useCaching);
+        const { messages, systemMessage } = transformToAnthropicParams(this.supportedMessages(request.messages), this.useCaching);
 
         let anthropicMessages = [...messages, ...(toolMessages ?? [])];
 
@@ -397,12 +413,19 @@ export class AnthropicModel implements LanguageModel {
                 let currentMessage: Message | undefined = undefined;
                 let currentOutputTokens: number = 0;
                 let usageYielded = false;
+                let compactionBlock: { index: number; summary: string } | undefined;
+                let currentIterations: UsageIteration[] | undefined;
 
                 try {
                     for await (const event of stream) {
                         if (event.type === 'content_block_start') {
                             const contentBlock = event.content_block;
 
+                            // compaction blocks are not yet part of the SDK types (beta 'compact-2026-01-12')
+                            const rawContentBlock = contentBlock as unknown as { type: string; content?: string | null };
+                            if (rawContentBlock.type === 'compaction') {
+                                compactionBlock = { index: event.index, summary: rawContentBlock.content ?? '' };
+                            }
                             if (contentBlock.type === 'thinking') {
                                 yield { thought: contentBlock.thinking, signature: contentBlock.signature ?? '' };
                             }
@@ -447,24 +470,34 @@ export class AnthropicModel implements LanguageModel {
                             }
                         } else if (event.type === 'content_block_delta') {
                             const delta = event.delta;
-                            if (delta.type === 'thinking_delta') {
-                                yield { thought: delta.thinking, signature: '' };
-                            }
-                            if (delta.type === 'signature_delta') {
-                                yield { thought: '', signature: delta.signature };
-                            }
-                            if (delta.type === 'text_delta') {
-                                yield { content: delta.text };
-                            }
-                            if (toolCall && delta.type === 'input_json_delta') {
-                                toolCall.args += delta.partial_json;
-                                yield { tool_calls: [{ function: { arguments: delta.partial_json } }] };
+                            if (compactionBlock && compactionBlock.index === event.index) {
+                                // the summary arrives as a single delta of a type not yet covered by the SDK
+                                const rawDelta = delta as unknown as { text?: string; content?: string };
+                                compactionBlock.summary += rawDelta.text ?? rawDelta.content ?? '';
+                            } else {
+                                if (delta.type === 'thinking_delta') {
+                                    yield { thought: delta.thinking, signature: '' };
+                                }
+                                if (delta.type === 'signature_delta') {
+                                    yield { thought: '', signature: delta.signature };
+                                }
+                                if (delta.type === 'text_delta') {
+                                    yield { content: delta.text };
+                                }
+                                if (toolCall && delta.type === 'input_json_delta') {
+                                    toolCall.args += delta.partial_json;
+                                    yield { tool_calls: [{ function: { arguments: delta.partial_json } }] };
+                                }
                             }
                             if (serverToolCall && delta.type === 'input_json_delta') {
                                 serverToolCall.args += delta.partial_json;
                                 yield { server_tool_calls: [{ id: serverToolCall.id, name: serverToolCall.name, arguments: serverToolCall.args, finished: false }] };
                             }
                         } else if (event.type === 'content_block_stop') {
+                            if (compactionBlock && compactionBlock.index === event.index) {
+                                yield { compaction: { summary: compactionBlock.summary || undefined } };
+                                compactionBlock = undefined;
+                            }
                             if (toolCall && toolCall.index === event.index) {
                                 toolCalls.push(toolCall);
                                 toolCall = undefined;
@@ -475,6 +508,24 @@ export class AnthropicModel implements LanguageModel {
                             }
                         } else if (event.type === 'message_delta') {
                             currentOutputTokens = event.usage.output_tokens;
+                            // usage iterations and context management are beta API additions not yet part of the SDK types
+                            const betaDelta = event as unknown as {
+                                usage?: { iterations?: UsageIteration[] };
+                                context_management?: { applied_edits?: AppliedContextEdit[] };
+                            };
+                            if (betaDelta.usage?.iterations) {
+                                currentIterations = betaDelta.usage.iterations;
+                            }
+                            if (betaDelta.context_management?.applied_edits?.length) {
+                                yield {
+                                    context_edits: betaDelta.context_management.applied_edits.map(edit => ({
+                                        type: edit.type,
+                                        cleared_input_tokens: edit.cleared_input_tokens,
+                                        cleared_tool_uses: edit.cleared_tool_uses,
+                                        cleared_thinking_turns: edit.cleared_thinking_turns
+                                    }))
+                                };
+                            }
                             if (event.delta.stop_reason === 'max_tokens') {
                                 if (toolCall) {
                                     yield { tool_calls: [{ finished: true, id: toolCall.id }] };
@@ -485,15 +536,30 @@ export class AnthropicModel implements LanguageModel {
                             currentMessages.push(event.message);
                             currentMessage = event.message;
                             currentOutputTokens = 0;
+                            currentIterations = (event.message.usage as unknown as { iterations?: UsageIteration[] }).iterations;
                         } else if (event.type === 'message_stop') {
                             if (currentMessage) {
                                 usageYielded = true;
-                                yield {
-                                    input_tokens: currentMessage.usage.input_tokens,
-                                    output_tokens: currentOutputTokens,
-                                    cache_creation_input_tokens: currentMessage.usage.cache_creation_input_tokens || undefined,
-                                    cache_read_input_tokens: currentMessage.usage.cache_read_input_tokens || undefined,
-                                };
+                                if (currentIterations?.length) {
+                                    // A compaction was triggered: the top-level usage excludes the compaction iteration.
+                                    // Report each iteration separately so that all of them are recorded for accounting,
+                                    // while the last (non-compaction) entry reflects the effective context size.
+                                    for (const iteration of currentIterations) {
+                                        yield {
+                                            input_tokens: iteration.input_tokens ?? 0,
+                                            output_tokens: iteration.output_tokens ?? 0,
+                                            cache_creation_input_tokens: iteration.cache_creation_input_tokens || undefined,
+                                            cache_read_input_tokens: iteration.cache_read_input_tokens || undefined,
+                                        };
+                                    }
+                                } else {
+                                    yield {
+                                        input_tokens: currentMessage.usage.input_tokens,
+                                        output_tokens: currentOutputTokens,
+                                        cache_creation_input_tokens: currentMessage.usage.cache_creation_input_tokens || undefined,
+                                        cache_read_input_tokens: currentMessage.usage.cache_read_input_tokens || undefined,
+                                    };
+                                }
                             }
                         }
                     }
@@ -553,6 +619,18 @@ export class AnthropicModel implements LanguageModel {
         });
 
         return { stream: asyncIterator };
+    }
+
+    /**
+     * Filters out messages that the configured endpoint cannot process. Compaction blocks are only
+     * supported by the beta Messages API; dropping them is safe because the full conversation history
+     * preceding the compaction is still part of the request.
+     */
+    protected supportedMessages(messages: readonly LanguageModelMessage[]): readonly LanguageModelMessage[] {
+        if (this.useBetaEndpoints) {
+            return messages;
+        }
+        return messages.filter(message => !LanguageModelMessage.isCompactionMessage(message));
     }
 
     /**
@@ -640,7 +718,7 @@ export class AnthropicModel implements LanguageModel {
         request: UserRequest
     ): Promise<LanguageModelTextResponse> {
         const settings = this.getSettings(request);
-        const { messages, systemMessage } = transformToAnthropicParams(request.messages);
+        const { messages, systemMessage } = transformToAnthropicParams(this.supportedMessages(request.messages));
 
         const params: Anthropic.MessageCreateParams = {
             max_tokens: this.maxTokens,
@@ -654,7 +732,8 @@ export class AnthropicModel implements LanguageModel {
             const response = this.useBetaEndpoints
                 ? await anthropic.beta.messages.create({ ...params, stream: false })
                 : await anthropic.messages.create(params);
-            const textContent = response.content[0];
+            // a compaction block may precede the text content, so take the first text block
+            const textContent = response.content.find(block => block.type === 'text');
 
             const usage = response.usage ? {
                 input_tokens: response.usage.input_tokens,

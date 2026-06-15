@@ -18,7 +18,17 @@ import { expect } from 'chai';
 import { ANTHROPIC_RESULT_BLOCK_DATA_KEY, AnthropicModel, DEFAULT_MAX_TOKENS, addCacheControlToLastMessage, mergeConsecutiveSameRoleMessages } from './anthropic-language-model';
 import { AnthropicMemoryTool, MEMORY_TOOL_NAME, MEMORY_TOOL_TYPE } from './anthropic-memory-tool';
 import {
-    isServerToolCallResponsePart, isUsageResponsePart, LanguageModelRequest, LanguageModelStreamResponsePart, ReasoningApi, ReasoningSupport, ToolRequest, UserRequest
+    isCompactionResponsePart,
+    isContextEditResponsePart,
+    isServerToolCallResponsePart,
+    isTextResponsePart,
+    isUsageResponsePart,
+    LanguageModelRequest,
+    LanguageModelStreamResponsePart,
+    ReasoningApi,
+    ReasoningSupport,
+    ToolRequest,
+    UserRequest
 } from '@theia/ai-core';
 import type { Anthropic } from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources';
@@ -548,6 +558,155 @@ describe('AnthropicModel', () => {
             expect(usageParts[0].input_tokens).to.equal(800);
             expect(usageParts[0].output_tokens).to.equal(55);
         });
+
+        it('should yield a compaction part and per-iteration usage when a compaction is triggered', async () => {
+            const events = [
+                { type: 'message_start', message: { usage: { input_tokens: 0, output_tokens: 0 } } },
+                // the compaction block streams as content_block_start + a single delta + content_block_stop
+                { type: 'content_block_start', index: 0, content_block: { type: 'compaction', content: '' } },
+                { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Summary of the conversation' } },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+                { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Based on our conversation' } },
+                { type: 'content_block_stop', index: 1 },
+                {
+                    type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: {
+                        output_tokens: 1000,
+                        iterations: [
+                            { type: 'compaction', input_tokens: 180000, output_tokens: 3500 },
+                            { type: 'message', input_tokens: 23000, output_tokens: 1000 }
+                        ]
+                    }
+                },
+                { type: 'message_stop' },
+            ];
+
+            const parts = await collectStreamParts(createModel([events]), 'hi');
+
+            const compactionParts = parts.filter(isCompactionResponsePart);
+            expect(compactionParts).to.have.lengthOf(1);
+            expect(compactionParts[0].compaction.summary).to.equal('Summary of the conversation');
+
+            // the compaction summary must not leak into the regular text content
+            const text = parts.filter(isTextResponsePart).map(part => part.content).join('');
+            expect(text).to.equal('Based on our conversation');
+
+            // one usage part per iteration, the non-compaction iteration last
+            const usageParts = parts.filter(isUsageResponsePart);
+            expect(usageParts).to.have.lengthOf(2);
+            expect(usageParts[0].input_tokens).to.equal(180000);
+            expect(usageParts[0].output_tokens).to.equal(3500);
+            expect(usageParts[1].input_tokens).to.equal(23000);
+            expect(usageParts[1].output_tokens).to.equal(1000);
+        });
+
+        it('should yield a context edit part when the message_delta reports applied context edits', async () => {
+            const events = [
+                { type: 'message_start', message: { usage: { input_tokens: 25000, output_tokens: 0 } } },
+                { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+                { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
+                { type: 'content_block_stop', index: 0 },
+                {
+                    type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 },
+                    context_management: {
+                        applied_edits: [
+                            { type: 'clear_thinking_20251015', cleared_thinking_turns: 3, cleared_input_tokens: 15000 },
+                            { type: 'clear_tool_uses_20250919', cleared_tool_uses: 8, cleared_input_tokens: 50000 }
+                        ]
+                    }
+                },
+                { type: 'message_stop' },
+            ];
+
+            const parts = await collectStreamParts(createModel([events]), 'hi');
+
+            const contextEditParts = parts.filter(isContextEditResponsePart);
+            expect(contextEditParts).to.have.lengthOf(1);
+            expect(contextEditParts[0].context_edits).to.deep.equal([
+                { type: 'clear_thinking_20251015', cleared_thinking_turns: 3, cleared_input_tokens: 15000, cleared_tool_uses: undefined },
+                { type: 'clear_tool_uses_20250919', cleared_tool_uses: 8, cleared_input_tokens: 50000, cleared_thinking_turns: undefined }
+            ]);
+
+            // regular usage reporting is unaffected
+            const usageParts = parts.filter(isUsageResponsePart);
+            expect(usageParts).to.have.lengthOf(1);
+            expect(usageParts[0].input_tokens).to.equal(25000);
+        });
+    });
+
+    describe('compaction messages in requests', () => {
+        function buildRecordingAnthropic(recordedParams: Anthropic.MessageCreateParams[]): Anthropic {
+            const stream = (params: Anthropic.MessageCreateParams) => {
+                recordedParams.push(params);
+                async function* iterate(): AsyncGenerator<object> {
+                    yield { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } };
+                    yield { type: 'message_stop' };
+                }
+                const iter = iterate();
+                (iter as unknown as Record<string, unknown>).on = () => { /* no-op */ };
+                (iter as unknown as Record<string, unknown>).abort = () => { /* no-op */ };
+                return iter;
+            };
+            return {
+                messages: { stream },
+                beta: { messages: { stream } }
+            } as unknown as Anthropic;
+        }
+
+        function createRecordingModel(recordedParams: Anthropic.MessageCreateParams[], useBetaEndpoints?: boolean): AnthropicModel {
+            return new class extends AnthropicModel {
+                protected override initializeAnthropic(): Anthropic {
+                    return buildRecordingAnthropic(recordedParams);
+                }
+            }(
+                'test-id', 'claude-opus-4-5', { status: 'ready' },
+                true, false, () => 'test-key', undefined, DEFAULT_MAX_TOKENS,
+                3, undefined, undefined, undefined, undefined, undefined, undefined, useBetaEndpoints
+            );
+        }
+
+        const request: UserRequest = {
+            messages: [
+                { actor: 'user', type: 'text', text: 'hi' },
+                { actor: 'ai', type: 'compaction', summary: 'Summary of the conversation' },
+                { actor: 'ai', type: 'text', text: 'Based on our conversation' },
+                { actor: 'user', type: 'text', text: 'continue' }
+            ],
+            agentId: 'test',
+            sessionId: 'test-session',
+            requestId: 'test-req'
+        };
+
+        async function drain(model: AnthropicModel): Promise<void> {
+            const response = await model.request(request);
+            if ('stream' in response) {
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                for await (const _part of response.stream) { /* drain */ }
+            }
+        }
+
+        it('sends compaction blocks back to the beta endpoint', async () => {
+            const recordedParams: Anthropic.MessageCreateParams[] = [];
+            await drain(createRecordingModel(recordedParams, true));
+
+            expect(recordedParams).to.have.lengthOf(1);
+            const assistantMessage = recordedParams[0].messages.find(message => message.role === 'assistant');
+            expect(assistantMessage?.content).to.deep.equal([
+                { type: 'compaction', content: 'Summary of the conversation' },
+                { type: 'text', text: 'Based on our conversation' }
+            ]);
+        });
+
+        it('drops compaction blocks when the beta endpoints are disabled', async () => {
+            const recordedParams: Anthropic.MessageCreateParams[] = [];
+            await drain(createRecordingModel(recordedParams, false));
+
+            expect(recordedParams).to.have.lengthOf(1);
+            const assistantMessage = recordedParams[0].messages.find(message => message.role === 'assistant');
+            expect(assistantMessage?.content).to.deep.equal([
+                { type: 'text', text: 'Based on our conversation' }
+            ]);
+        });
     });
 
     describe('getSettings effort API (adaptive thinking)', () => {
@@ -814,10 +973,10 @@ describe('AnthropicModel', () => {
             constructor(memoryToolFolder?: string, useCaching: boolean = false) {
                 super('test-id', 'claude-opus-4-5', { status: 'ready' }, true, useCaching,
                     () => 'test-key', undefined, DEFAULT_MAX_TOKENS, 3,
-                    undefined, undefined, undefined, undefined, undefined, undefined, memoryToolFolder);
+                    undefined, undefined, undefined, undefined, undefined, undefined, undefined, memoryToolFolder);
             }
 
-            public callCreateTools(request: LanguageModelRequest): Array<Anthropic.Messages.Tool | Anthropic.Messages.MemoryTool20250818> | undefined {
+            public callCreateTools(request: LanguageModelRequest): Anthropic.Messages.ToolUnion[] | undefined {
                 return this.createTools(this.withMemoryTool(request));
             }
 

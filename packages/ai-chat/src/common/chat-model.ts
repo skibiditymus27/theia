@@ -21,6 +21,8 @@
 
 import {
     AIVariableResolutionRequest,
+    AppliedContextEdit,
+    CompactionMessage,
     GenericCapabilitySelections,
     LanguageModelMessage,
     ReasoningSettings,
@@ -477,6 +479,14 @@ export interface ThinkingContentData {
     signature: string;
 }
 
+export interface CompactionContentData {
+    summary: string;
+}
+
+export interface ContextEditContentData {
+    edits: AppliedContextEdit[];
+}
+
 export interface MarkdownContentData {
     content: string;
 }
@@ -648,6 +658,25 @@ export interface ThinkingChatResponseContent
     kind: 'thinking';
     content: string;
     signature: string;
+}
+
+/**
+ * Indicates that the conversation history was compacted server-side into a summary
+ * (e.g. via Anthropic's compaction feature). The summary is passed back to the
+ * language model on subsequent requests.
+ */
+export interface CompactionChatResponseContent extends ChatResponseContent {
+    kind: 'compaction';
+    summary: string;
+}
+
+/**
+ * Indicates that the language model provider edited the conversation context server-side,
+ * e.g. by clearing old tool results or thinking blocks. Purely informational.
+ */
+export interface ContextEditChatResponseContent extends ChatResponseContent {
+    kind: 'contextEdit';
+    edits: AppliedContextEdit[];
 }
 
 export interface ProgressChatResponseContent
@@ -865,6 +894,28 @@ export namespace ThinkingChatResponseContent {
             obj.kind === 'thinking' &&
             'content' in obj &&
             typeof obj.content === 'string'
+        );
+    }
+}
+
+export namespace CompactionChatResponseContent {
+    export function is(obj: unknown): obj is CompactionChatResponseContent {
+        return (
+            ChatResponseContent.is(obj) &&
+            obj.kind === 'compaction' &&
+            'summary' in obj &&
+            typeof obj.summary === 'string'
+        );
+    }
+}
+
+export namespace ContextEditChatResponseContent {
+    export function is(obj: unknown): obj is ContextEditChatResponseContent {
+        return (
+            ChatResponseContent.is(obj) &&
+            obj.kind === 'contextEdit' &&
+            'edits' in obj &&
+            Array.isArray(obj.edits)
         );
     }
 }
@@ -2238,6 +2289,64 @@ export class ThinkingChatResponseContentImpl implements ThinkingChatResponseCont
                 content: this._content,
                 signature: this._signature
             }
+        };
+    }
+}
+
+export class CompactionChatResponseContentImpl implements CompactionChatResponseContent {
+    readonly kind = 'compaction';
+
+    constructor(protected readonly _summary: string) { }
+
+    get summary(): string {
+        return this._summary;
+    }
+
+    asString(): string | undefined {
+        return undefined;
+    }
+
+    asDisplayString(): string | undefined {
+        return `<Compacted>${this._summary}</Compacted>`;
+    }
+
+    toLanguageModelMessage(): CompactionMessage {
+        return {
+            actor: 'ai',
+            type: 'compaction',
+            summary: this._summary
+        };
+    }
+
+    toSerializable(): SerializableChatResponseContentData<CompactionContentData> {
+        return {
+            kind: 'compaction',
+            data: { summary: this._summary }
+        };
+    }
+}
+
+export class ContextEditChatResponseContentImpl implements ContextEditChatResponseContent {
+    readonly kind = 'contextEdit';
+
+    constructor(protected readonly _edits: AppliedContextEdit[]) { }
+
+    get edits(): AppliedContextEdit[] {
+        return this._edits;
+    }
+
+    asString(): string | undefined {
+        return undefined;
+    }
+
+    asDisplayString(): string | undefined {
+        return undefined;
+    }
+
+    toSerializable(): SerializableChatResponseContentData<ContextEditContentData> {
+        return {
+            kind: 'contextEdit',
+            data: { edits: this._edits }
         };
     }
 }

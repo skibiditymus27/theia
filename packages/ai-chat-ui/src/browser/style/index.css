@@ -971,13 +971,22 @@ div:last-child>.theia-ChatNode {
 }
 
 .theia-toolCall,
-.theia-thinking {
+.theia-thinking,
+.theia-compaction {
   font-weight: normal;
   color: var(--theia-descriptionForeground);
   line-height: 20px;
   margin-top: 13px;
   margin-bottom: 13px;
   cursor: pointer;
+}
+
+.theia-contextEdit {
+  font-weight: normal;
+  color: var(--theia-descriptionForeground);
+  line-height: 20px;
+  margin-top: 13px;
+  margin-bottom: 13px;
 }
 
 /* Tool confirmation styles */
@@ -1208,12 +1217,14 @@ details.theia-tool-confirmation-args>summary::marker {
 .theia-toolCall .fa,
 .theia-toolCall details summary::marker,
 .theia-thinking .fa,
-.theia-thinking details summary::marker {
+.theia-thinking details summary::marker,
+.theia-compaction details summary::marker {
   color: var(--theia-button-background);
 }
 
 .theia-toolCall details pre,
-.theia-thinking details pre {
+.theia-thinking details pre,
+.theia-compaction details pre {
   cursor: text;
   line-height: 1rem;
   margin-top: 0;

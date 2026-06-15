@@ -30,6 +30,8 @@ import {
     CodePartRenderer,
     CodePartRendererAction,
     CommandPartRenderer,
+    CompactionPartRenderer,
+    ContextEditPartRenderer,
     CopyToClipboardButtonAction,
     ErrorPartRenderer,
     HorizontalLayoutPartRenderer,
@@ -186,6 +188,8 @@ export default new ContainerModule((bind, _unbind, _isBound, rebind) => {
     bind(ChatResponsePartRenderer).to(NotAvailableToolCallRenderer).inSingletonScope();
     bind(ChatResponsePartRenderer).to(ErrorPartRenderer).inSingletonScope();
     bind(ChatResponsePartRenderer).to(ThinkingPartRenderer).inSingletonScope();
+    bind(ChatResponsePartRenderer).to(CompactionPartRenderer).inSingletonScope();
+    bind(ChatResponsePartRenderer).to(ContextEditPartRenderer).inSingletonScope();
     bind(ChatResponsePartRenderer).to(QuestionPartRenderer).inSingletonScope();
     bind(ChatResponsePartRenderer).to(ProgressPartRenderer).inSingletonScope();
     bind(ChatResponsePartRenderer).to(TextPartRenderer).inSingletonScope();

@@ -42,7 +42,7 @@ export interface ReasoningSupport {
     readonly defaultLevel?: ReasoningLevel;
 }
 
-export type LanguageModelMessage = TextMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ServerToolUseMessage | ImageMessage;
+export type LanguageModelMessage = TextMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ServerToolUseMessage | ImageMessage | CompactionMessage;
 export namespace LanguageModelMessage {
 
     export function isTextMessage(obj: LanguageModelMessage): obj is TextMessage {
@@ -50,6 +50,9 @@ export namespace LanguageModelMessage {
     }
     export function isThinkingMessage(obj: LanguageModelMessage): obj is ThinkingMessage {
         return obj.type === 'thinking';
+    }
+    export function isCompactionMessage(obj: LanguageModelMessage): obj is CompactionMessage {
+        return obj.type === 'compaction';
     }
     export function isToolUseMessage(obj: LanguageModelMessage): obj is ToolUseMessage {
         return obj.type === 'tool_use';
@@ -74,6 +77,17 @@ export interface ThinkingMessage {
     type: 'thinking';
     thinking: string;
     signature: string;
+}
+
+/**
+ * Represents a conversation summary created by a server-side compaction of the conversation history
+ * (e.g. Anthropic's compaction feature). Providers supporting compaction must pass this message back
+ * to the language model on subsequent requests.
+ */
+export interface CompactionMessage {
+    actor: 'ai';
+    type: 'compaction';
+    summary: string;
 }
 
 export interface ToolResultMessage {
@@ -378,10 +392,12 @@ export interface LanguageModelTextResponse {
 export const isLanguageModelTextResponse = (obj: unknown): obj is LanguageModelTextResponse =>
     !!(obj && typeof obj === 'object' && 'text' in obj && typeof (obj as { text: unknown }).text === 'string');
 
-export type LanguageModelStreamResponsePart = TextResponsePart | ToolCallResponsePart | ServerToolCallResponsePart | ThinkingResponsePart | UsageResponsePart;
+export type LanguageModelStreamResponsePart =
+    TextResponsePart | ToolCallResponsePart | ServerToolCallResponsePart | ThinkingResponsePart | UsageResponsePart | CompactionResponsePart | ContextEditResponsePart;
 
 export const isLanguageModelStreamResponsePart = (part: unknown): part is LanguageModelStreamResponsePart =>
-    isUsageResponsePart(part) || isTextResponsePart(part) || isThinkingResponsePart(part) || isToolCallResponsePart(part) || isServerToolCallResponsePart(part);
+    isUsageResponsePart(part) || isTextResponsePart(part) || isThinkingResponsePart(part) || isToolCallResponsePart(part) || isServerToolCallResponsePart(part) ||
+    isCompactionResponsePart(part) || isContextEditResponsePart(part);
 
 export interface UsageResponsePart {
     input_tokens: number;
@@ -431,6 +447,39 @@ export interface ThinkingResponsePart {
 }
 export const isThinkingResponsePart = (part: unknown): part is ThinkingResponsePart =>
     !!(part && typeof part === 'object' && 'thought' in part && typeof part.thought === 'string');
+
+/**
+ * Emitted when the language model compacted the conversation history server-side into a summary.
+ */
+export interface CompactionResponsePart {
+    compaction: {
+        /** The generated conversation summary. `undefined` if the compaction did not produce a summary. */
+        summary?: string;
+    };
+}
+export const isCompactionResponsePart = (part: unknown): part is CompactionResponsePart =>
+    !!(part && typeof part === 'object' && 'compaction' in part && typeof part.compaction === 'object');
+
+/**
+ * Describes a single context edit applied server-side by the language model provider,
+ * e.g. clearing old tool results or thinking blocks (Anthropic context editing).
+ */
+export interface AppliedContextEdit {
+    type: string;
+    cleared_input_tokens?: number;
+    cleared_tool_uses?: number;
+    cleared_thinking_turns?: number;
+}
+
+/**
+ * Emitted when the language model provider edited the conversation context server-side.
+ * This is purely informational, clients keep their full history unchanged.
+ */
+export interface ContextEditResponsePart {
+    context_edits: AppliedContextEdit[];
+}
+export const isContextEditResponsePart = (part: unknown): part is ContextEditResponsePart =>
+    !!(part && typeof part === 'object' && 'context_edits' in part && Array.isArray(part.context_edits));
 
 export interface ToolCallTextResult { type: 'text', text: string; };
 export interface ToolCallImageResult extends Base64ImageContent { type: 'image' };

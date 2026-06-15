@@ -19,6 +19,8 @@ import {
     ChatResponseContent,
     CodeChatResponseContentImpl,
     CommandChatResponseContentImpl,
+    CompactionChatResponseContentImpl,
+    ContextEditChatResponseContentImpl,
     ErrorChatResponseContentImpl,
     HorizontalLayoutChatResponseContentImpl,
     InformationalChatResponseContentImpl,
@@ -32,6 +34,8 @@ import {
     UnknownChatResponseContentImpl,
     TextContentData,
     ThinkingContentData,
+    CompactionContentData,
+    ContextEditContentData,
     MarkdownContentData,
     InformationalContentData,
     CodeContentData,
@@ -248,6 +252,16 @@ export class DefaultChatContentDeserializerContribution implements ChatContentDe
                 data.content,
                 data.signature
             )
+        });
+
+        registry.register({
+            kind: 'compaction',
+            deserialize: (data: CompactionContentData) => new CompactionChatResponseContentImpl(data.summary)
+        });
+
+        registry.register({
+            kind: 'contextEdit',
+            deserialize: (data: ContextEditContentData) => new ContextEditChatResponseContentImpl(data.edits)
         });
 
         registry.register({

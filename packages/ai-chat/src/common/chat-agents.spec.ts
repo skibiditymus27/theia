@@ -24,6 +24,8 @@ import {
     MutableChatRequestModel,
     ChatModel,
     ChatRequest,
+    CompactionChatResponseContentImpl,
+    ContextEditChatResponseContentImpl,
     TextChatResponseContentImpl,
     ThinkingChatResponseContentImpl,
 } from './chat-model';
@@ -125,6 +127,26 @@ describe('AbstractChatAgent.getMessages', () => {
             .filter(m => m.actor === 'ai');
         expect(aiTextMessages).to.have.lengthOf(1);
         expect(aiTextMessages[0].text).to.equal('Partial reply before cancel');
+    });
+
+    it('includes compaction content as a compaction message and excludes context edit content', async () => {
+        const model = new MutableChatModel(ChatAgentLocation.Panel);
+        const request = model.addRequest(createParsedRequest('Hello'));
+
+        request.response.response.addContent(new CompactionChatResponseContentImpl('Summary of the conversation'));
+        request.response.response.addContent(new ContextEditChatResponseContentImpl(
+            [{ type: 'clear_thinking_20251015', cleared_thinking_turns: 2, cleared_input_tokens: 1500 }]
+        ));
+        addTextResponse(request, 'Continuing');
+        request.response.complete();
+
+        const messages = await agent.exposeGetMessages(model);
+
+        const compactionMessages = messages.filter(LanguageModelMessage.isCompactionMessage);
+        expect(compactionMessages).to.have.lengthOf(1);
+        expect(compactionMessages[0].summary).to.equal('Summary of the conversation');
+        // user text + compaction + ai text; the context edit content must not be sent to the language model
+        expect(messages).to.have.lengthOf(3);
     });
 });
 
